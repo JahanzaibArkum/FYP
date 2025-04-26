@@ -1,183 +1,202 @@
+import re
 import os
-import pandas as pd
-import streamlit as st
 import faiss
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-from dotenv import load_dotenv
-from groq import Groq
 import emoji
 import torch
+import numpy as np
+import pandas as pd
+from groq import Groq
+import streamlit as st
+from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
 
-# ------------------- Environment Setup -------------------
+
+# Load .env file
 load_dotenv()
 api_key = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=api_key)
 
-# ------------------- Device and Models -------------------
-device = "cuda" if torch.cuda.is_available() else "cpu"
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+# Load model
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# ------------------- Load Data & FAISS Index -------------------
+# Load Hadith CSV
 hadith_data = pd.read_csv("combined_file.csv")
 hadith_data = hadith_data[["Hadith English", "Hadith Arabic", "Reference"]]
 hadith_list = hadith_data.to_dict(orient="records")
+
+# Load FAISS index
 index = faiss.read_index("Full_hadith_index.faiss")
 
-# ------------------- Streamlit Page Config -------------------
-st.set_page_config(
-    page_title=emoji.emojize("📜 Hadith Navigator Chatbot"),
-    page_icon=emoji.emojize("📖"),
-    layout="wide"
-)
 
-# ------------------- Session State -------------------
-if "user_profile" not in st.session_state:
-    st.session_state.user_profile = {
-        "name": "",
-        "threads": [{
-            "chat_history": [],
-            "preferred_topics": [],
-            "last_query": "",
-            "last_response": ""
-        }],
-        "current_thread": 0
-    }
+# Streamlit UI
+st.title(emoji.emojize("🕌 Hadith Navigator Chatbot"))
+st.markdown("Type your question below and get answers with references from Hadith.")
 
-# ------------------- Retrieval Function -------------------
-def retrieve_top_k_hadiths(query, k=10, similarity_threshold=0.4):
-    query_embedding = embedding_model.encode([query]).astype("float32")
 
-    index_size = index.ntotal
-    embeddings = np.zeros((index_size, query_embedding.shape[1]), dtype="float32")
-    index.reconstruct_n(0, index_size, embeddings)
 
-    similarities = cosine_similarity(query_embedding, embeddings).flatten()
 
-    relevant_hadiths = [
-        {**hadith_list[idx], "similarity_score": sim_score}
-        for idx, sim_score in enumerate(similarities)
-        if sim_score >= similarity_threshold
+if "conversations" not in st.session_state:
+    st.session_state.conversations = []
+
+if "current_convo_index" not in st.session_state:
+    st.session_state.current_convo_index = None
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+st.sidebar.title("📚 Your Conversations")
+
+st.sidebar.markdown("---")
+# ➕ Start new chat option
+if st.sidebar.button("➕ Start New Chat"):
+    st.session_state.chat_history = [
+        {
+            "role": "system",
+            "content": (
+                "You are a Hadith scholar AI assistant. You must answer only using the retrieved Hadiths. "
+                "Always include the reference for every response. Do not provide information that is not in the retrieved Hadiths."
+            )
+        }
+    ]
+    st.session_state.current_convo_index = None
+
+
+for i, convo in enumerate(st.session_state.conversations):
+    title_key = f"title_{i}"
+    new_title = st.sidebar.text_input(" ", value=convo["title"], key=title_key)
+
+    # Update title
+    st.session_state.conversations[i]["title"] = new_title
+
+    if st.sidebar.button(f"🔄 {new_title}", key=f"load_{i}"):
+        st.session_state.chat_history = convo["history"]
+        st.session_state.current_convo_index = i
+
+
+
+# Initialize session history
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [
+        {
+            "role": "system",
+            "content": (
+                "You are a Hadith scholar AI assistant. You must answer only using the retrieved Hadiths. "
+                "Always include the reference for every response. Do not provide information that is not in the retrieved Hadiths."
+            )
+        }
     ]
 
-    sorted_hadiths = sorted(relevant_hadiths, key=lambda x: x["similarity_score"], reverse=True)
-    return sorted_hadiths[:k]
 
-# ------------------- Follow-up Detection -------------------
-def is_follow_up_query(current_query, last_query, threshold=0.6):
-    current_embedding = embedding_model.encode([current_query]).astype("float32")
-    last_embedding = embedding_model.encode([last_query]).astype("float32")
-    similarity_score = cosine_similarity(current_embedding, last_embedding).flatten()[0]
-    return similarity_score >= threshold
+# 👇 Decide if current query is a follow-up
+def decide_if_followup(chat_history, current_query):
+    messages = [
+        {"role": "system", "content": "You're a helpful assistant that determines whether a question is a follow-up or a standalone question."},
+        {"role": "user", "content": f"""Chat history:
+{chat_history}
 
-# ------------------- Chatbot Core (RAG Style) -------------------
-def generate_response(query):
-    user_profile = st.session_state.user_profile
-    thread = user_profile["threads"][user_profile["current_thread"]]
+Current question:
+{current_query}
 
-    clarification_note = ""
-    if thread["last_query"] and is_follow_up_query(query, thread["last_query"]):
-        query = thread["last_query"]
-        clarification_note = "You asked for clarification on the previous question."
+Does this current question depend on the above conversation? Answer with 'Yes' or 'No' only."""}
+    ]
 
-    # Retrieve top-k relevant hadiths (retrieval step)
-    context_hadiths = retrieve_top_k_hadiths(query)
-    if not context_hadiths:
-        return emoji.emojize("⚠️ No relevant Hadith found.")
-
-    thread["chat_history"].append(query)
-
-    # Update preferred topics dynamically
-    if "patience" in query.lower() and "Patience" not in thread["preferred_topics"]:
-        thread["preferred_topics"].append("Patience")
-    if "faith" in query.lower() and "Faith" not in thread["preferred_topics"]:
-        thread["preferred_topics"].append("Faith")
-
-    previous_context = ""
-    if thread["last_query"] and thread["last_response"]:
-        previous_context = f"""
-Previous User Query: {thread['last_query']}
-Previous Bot Response: {thread['last_response']}
-"""
-
-    preferred_topics_text = f"User's preferred topics: {', '.join(thread['preferred_topics'])}\n"
-
-    # Format hadith context for prompt (context injection)
-    hadith_context = "\n\n".join([
-        f"### Hadith {i+1}:\n{(h['Hadith English'][:1000] + '...') if len(h['Hadith English']) > 1000 else h['Hadith English']}\n**Reference**: {h['Reference']}"
-        for i, h in enumerate(context_hadiths)
-    ])
-
-    prompt = f"""
-You are an Islamic chatbot. Respond based only on the provided Hadiths below.
-
-User: {user_profile['name']}
-
-{previous_context}
-
-Context (Hadiths):
-{hadith_context}
-
-{preferred_topics_text}
-{clarification_note}
-
-User Query: {query}
-
-Response:
-"""
-
-    # Generate final response (generation step)
-    chat_completion = client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        model="llama3-8b-8192"
+    response = client.chat.completions.create(
+        model="llama3-70b-8192",
+        messages=messages,
+        max_tokens=10,
+        temperature=0,
     )
 
-    response = chat_completion.choices[0].message.content
+    answer = response.choices[0].message.content.strip().lower()
+    return 'yes' in answer
 
-    thread["last_query"] = query
-    thread["last_response"] = response
 
-    if len(thread["chat_history"]) > 15:
-        user_profile["threads"].append({
-            "chat_history": [],
-            "preferred_topics": thread["preferred_topics"].copy(),
-            "last_query": "",
-            "last_response": ""
-        })
-        user_profile["current_thread"] += 1
+def generate_title_from_question(question):
+    prompt = [
+        {"role": "system", "content": "Summarize the user question into 4-6 words that describe the topic."},
+        {"role": "user", "content": question}
+    ]
+    response = client.chat.completions.create(
+        model="llama3-8b-8192",
+        messages=prompt,
+        max_tokens=20,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip().capitalize()
 
-    hadith_output = "\n\n".join([
-        f"**Hadith:** {h['Hadith English']}  \n**Reference:** {h['Reference']}  \n**Similarity Score:** {h['similarity_score']:.3f}"
-        for h in context_hadiths
-    ])
 
-    final_output = f"## 🧠 Response:\n{response}\n\n---\n\n### 📚 Hadiths Used:\n{hadith_output}"
-    return emoji.emojize(final_output)
+# 🔍 Search function
+def search_hadith(query, top_k=3):
+    # Check if follow-up
+    is_followup = decide_if_followup(st.session_state.chat_history[-5:], query)
 
-# ------------------- Streamlit UI -------------------
-st.title(emoji.emojize("📜 Hadith Navigator Chatbot"))
-st.markdown(emoji.emojize("🚀 **Ask Hadith-related questions and get authentic, referenced answers.**"))
+    if is_followup:
+        rephrase_prompt = [
+            {"role": "system", "content": "You are a helpful assistant that rewrites follow-up questions as standalone questions."},
+            {"role": "user", "content": f"Chat history:\n{st.session_state.chat_history[-5:]}\n\nCurrent question:\n{query}\n\nRephrase the current question using the context."}
+        ]
 
-# Sidebar
-with st.sidebar:
-    st.title(emoji.emojize("👤 User Info"))
-    name = st.text_input("Enter your name:", value=st.session_state.user_profile.get("name", ""))
-    st.session_state.user_profile["name"] = name
+        rephrase_response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=rephrase_prompt,
+            max_tokens=700,
+            temperature=0.5,
+        )
 
-    st.markdown(emoji.emojize("### 💬 Chat History"))
-    thread = st.session_state.user_profile["threads"][st.session_state.user_profile["current_thread"]]
-    for chat in thread["chat_history"]:
-        st.markdown(emoji.emojize(f"🖌️ {chat}"))
+        query = rephrase_response.choices[0].message.content.strip()
 
-# User Query Input
-query = st.text_input(
-    emoji.emojize("🔣 Ask a Hadith-related question:"),
-    placeholder="Ask something like: What does Islam say about patience?"
-)
+    # Embed and retrieve
+    query_embedding = model.encode([query])
+    D, I = index.search(np.array(query_embedding).astype('float32'), k=top_k)
+    top_hadiths = [hadith_list[i] for i in I[0]]
+    return top_hadiths, query
 
-# Handle Query
-if query:
-    with st.spinner(emoji.emojize("⏳ Processing your query...")):
-        result = generate_response(query)
-    st.markdown(result, unsafe_allow_html=True)
+
+user_input = st.chat_input("Ask Anything About Islam!")
+with st.spinner("Generating answer..."):
+    # 🧠 Handle user query
+    if user_input:
+        top_matches, processed_query = search_hadith(user_input)
+
+        # Build context
+        context = "\n\n".join([
+            f"{i+1}. {h['Hadith English']} (Reference: {h['Reference']})"
+            for i, h in enumerate(top_matches)
+        ])
+
+        # Update chat history with user + context
+        user_message = f"User Question: {processed_query}\n\nUse the following Hadiths to answer:\n{context}"
+        st.session_state.chat_history.append({"role": "user", "content": user_message})
+
+        # Get LLM answer
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=st.session_state.chat_history,
+            max_tokens=700,
+            temperature=1.0,
+        )
+
+        assistant_reply = response.choices[0].message.content
+        st.session_state.chat_history.append({"role": "assistant", "content": assistant_reply})
+         
+         # 🔖 If it's a new conversation
+        if st.session_state.current_convo_index is None:
+            title = generate_title_from_question(user_input)
+            st.session_state.conversations.append({
+                "title": title,
+                "history": st.session_state.chat_history.copy()
+            })
+            st.session_state.current_convo_index = len(st.session_state.conversations) - 1
+        else:
+            # Update existing conversation
+            st.session_state.conversations[st.session_state.current_convo_index]["history"] = st.session_state.chat_history.copy() 
+
+# 💬 Show chat in order with scrollable style
+for message in st.session_state.chat_history:
+    if message["role"] == "user":
+        with st.chat_message("user"):
+            st.markdown(f"**You:** {message['content']}")
+    elif message["role"] == "assistant":
+        with st.chat_message("assistant"):
+            st.markdown(f"**HadithBot:** {message['content']}")
+
