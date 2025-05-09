@@ -27,7 +27,6 @@ hadith_list = hadith_data.to_dict(orient="records")
 # Load FAISS index
 index = faiss.read_index("Full_hadith_index.faiss")
 
-print(index.__class__)
 # Streamlit UI
 st.title(emoji.emojize("🕌 Hadith Navigator Chatbot"))
 st.markdown("Type your question below and get answers with references from Hadith.")
@@ -90,27 +89,22 @@ if "chat_history" not in st.session_state:
 
 def check_islamic_relevance(question):
     relevance_prompt = [
-    {
-        "role": "system",
-        "content": (
-            "You are an intelligent assistant that determines whether a user's question is related to Islam according to scholarly opinions. "
-            "This includes any aspect of Islamic life such as beliefs, rulings, ethics, culture, values, marriage, finance, worship, "
-            "or guidance based on the Quran, Hadith, or scholarly opinions."
-        )
-    },
-    {
-        "role": "user",
-        "content": (
-            f"User asked: {question}\n\n"
-            "Is this question related to Islam in any way, including indirectly? "
-            "Respond strictly with 'Yes' or 'No'."
-        )
-    }
+        {
+            "role": "system",
+            "content": (
+                "You are an intelligent assistant that determines whether a user's question is related to Islam  . "
+                "Only return 'Yes' if the question relates to islam:\n"
+            )
+        },
+        {
+            "role": "user",
+            "content": f"Is the following question related to Islam? '{question}'\n\nAnswer 'Yes' or 'No' only."
+        }
     ]
 
 
     response = client.chat.completions.create(
-        model="deepseek-r1-distill-llama-70b",
+        model="llama3-8b-8192",
         messages=relevance_prompt,
         max_tokens=10,
         temperature=0,
@@ -262,7 +256,7 @@ with st.spinner("Generating answer..."):
             response = client.chat.completions.create(
                 model="deepseek-r1-distill-llama-70b",
                 messages=st.session_state.chat_history,
-                max_tokens=1024,
+                max_tokens=5000,
                 temperature=1.0,
             )
 
@@ -290,3 +284,4 @@ for message in st.session_state.chat_history:
     elif message["role"] == "assistant":
         with st.chat_message("assistant"):
             st.markdown(f"**HadithBot:** {message['content']}")
+
