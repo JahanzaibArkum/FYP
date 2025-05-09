@@ -89,20 +89,22 @@ if "chat_history" not in st.session_state:
 
 def check_islamic_relevance(question):
     relevance_prompt = [
-        {
-            "role": "system",
-            "content": (
-                "You are an intelligent assistant that determines whether a user's question is related to Islam  . "
-                "Only return 'Yes' if the question relates to islam:\n"
-            )
-        },
-        {
-            "role": "user",
-            "content": f"Is the following question related to Islam? '{question}'\n\nAnswer 'Yes' or 'No' only."
-        }
+    {
+        "role": "system",
+        "content": (
+            "You are an intelligent assistant. Determine whether the user's question is related to Islam, including its teachings, ethics, or practices. "
+            "If the question is vague or unclear, respond with: 'The question is vague. Please clarify.' "
+            "If it relates to Islam in any context (e.g., marriage, worship, ethics etc), answer 'Yes'. Otherwise, answer 'No'."
+        )
+    },
+    {
+        "role": "user",
+        "content": f"Is the following question related to Islam? '{question}'"
+    } 
     ]
 
 
+   
     response = client.chat.completions.create(
         model="llama3-8b-8192",
         messages=relevance_prompt,
@@ -284,4 +286,5 @@ for message in st.session_state.chat_history:
     elif message["role"] == "assistant":
         with st.chat_message("assistant"):
             st.markdown(f"**HadithBot:** {message['content']}")
+
 
