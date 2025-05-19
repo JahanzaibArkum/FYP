@@ -25,7 +25,7 @@ hadith_data = hadith_data[["Hadith English", "Hadith Arabic", "Reference"]]
 hadith_list = hadith_data.to_dict(orient="records")
 
 # Load FAISS index
-index = faiss.read_index("cosine_hadith_index(1).faiss")
+index = faiss.read_index("hadith_data.faiss")
 
 # Streamlit UI
 st.title(emoji.emojize("🕌 Hadith Navigator Chatbot"))
